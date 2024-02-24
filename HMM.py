@@ -451,7 +451,7 @@ class HMM:
                 # 记录路径。
                 backpointers[t, s] = np.argmax(temp)
             #如果返回的temp全零，则在位置t之前插入1个'd',直至viterbi的每一行都不全为零。
-            while (np.max(viterbi[t]) == 0 and t < int(self.dnalen*1.1)): #增大self.dnalen后的系数可以提高解码成功率，当系数等于2.0时意味着把所有的观测序列都删除，一定可以通过插入生成任何需要的观测序列。
+            while (np.max(viterbi[t]) == 0 and t < int(self.dnalen*2)): #增大self.dnalen后的系数可以提高解码成功率，当系数等于2.0时意味着把所有的观测序列都删除，一定可以通过插入生成任何需要的观测序列。
                 #增加一行viterbi
                 T = T + blockd
                 viterbi = np.vstack([viterbi, np.zeros((blockd,N))])

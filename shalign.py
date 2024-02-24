@@ -6,6 +6,12 @@ from queue import Queue
 import re
 from HMM import HMM
 
+#全局变量定义
+g_h5file=''
+g_line_len=60
+g_nodes_per_level=1
+g_sch_scal=0.1
+
 class Node:
     def __init__(self, value, prob=None):
         self.value = value #偏移值，0：没有插入或删除变异，正整数：插入value个碱基，负整数：删除value个碱基
@@ -24,7 +30,6 @@ def create_tree(hmm_obj:HMM, list_obv, line_len=60, max_size_level=1, searching_
     :param searching_scal: 每次搜索时，马尔科夫模型分解后的片段长度的可变范围，当默认值为60时，可变长度范围为正负6。
     :return: 正常结束返回搜索树和叶子节点两个参数
     """
-    #ex_mask: 二维np数组， 突变位点发射矩阵为不为零设为true。
     root = Node(0, 1.0)  # 创建根结点
     queue = Queue()
     temp_queue = []
@@ -37,7 +42,6 @@ def create_tree(hmm_obj:HMM, list_obv, line_len=60, max_size_level=1, searching_
     pian_max = max(seg_insert_rang, dst + seg_insert_rang)
 
     for lv_m in range(m):
-    #for lv_m in range(3):#册使用
         level_size = queue.qsize()
         temp_lv = [[None for _ in range(pian_min, pian_max+1)] for _ in range(pian_min, pian_max+1)]
         seg_start = lv_m * line_len
@@ -164,6 +168,50 @@ def add_number_to_string(input_string, increment):
     else:
         return input_string
 
+def print_list_characters(input_list, line_len):
+    input_string = ''.join(map(str, input_list))
+    lines = [input_string[i:i+line_len] for i in range(0, len(input_string), line_len)]
+    for line in lines:
+        print(line)
+
+def enquire_param():
+    global g_line_len, g_nodes_per_level, g_sch_scal
+    line_len = input(f"请输入DNA序列片段化的长度（默认值为60,当前值为{g_line_len}）:")
+    if line_len.strip():
+        g_line_len = int(line_len)
+
+    nodes = input(f"请输入搜索树每层保留最大节点数（默认值为1,当前值为{g_nodes_per_level}）:")
+    if nodes.strip():
+        g_nodes_per_level = int(nodes)
+
+    scale = input(f"请输入搜索可变范围（0.01~0.50,默认值为0.1,当前值为{g_sch_scal}）:")
+    if scale.strip():
+        g_sch_scal = float(scale)
+
+def get_hidden_states(node,ln_len):
+    stack = []
+    #node = leaf
+    while node is not None:
+        stack.append((node.hiden_states, node.prob))
+        node = node.father
+    # 从堆栈中读取数据并输出
+    prob = 1.0
+    pianyi = 0
+    stack.pop()  # 删除根节点
+    new_hs = []
+    while stack:
+        hs, probs = stack.pop()
+        prob *= probs
+        for s in hs:
+            if s.startswith('I') or s.startswith('D') or s.startswith('M'):
+                new_s = add_number_to_string(s, pianyi)
+                new_hs.append(new_s)
+            else:
+                pass
+        pianyi += ln_len
+    return new_hs
+
+
 def generate_model():
     dnalen=input("请输入DNA序列的长度，不含结束符（如 ACGe 长度为3）：")
     dnalen=int(dnalen)
@@ -178,7 +226,12 @@ def generate_model():
 
 def demonstrate_model():
     # 实现模型演示的功能
-    h5file=input("请输入DNA序列模型文件名（如model.hdf5）:")
+    global g_h5file, g_line_len, g_nodes_per_level, g_sch_scal
+    h5file=input(f"请输入DNA序列模型文件名（如model.hdf5,当前值为{g_h5file}）:")
+    if h5file.strip():
+        g_h5file=h5file
+    else:
+        h5file=g_h5file
     try:
         with h5py.File(h5file, 'r') as f:
             dnalen = f['dnalen'][()]
@@ -193,38 +246,23 @@ def demonstrate_model():
         return
     demontimes=input("请输入演示次数（如2）:")
 
+    enquire_param()
+
+
     for i in range(int(demontimes)):
         obs_seq, hiden_seq, hs_idx_seq = hmm.generate_train_seq()
 
-        print(obs_seq)
+        #print(obs_seq)
+        print_list_characters(obs_seq, 60)
         print("Observation Probability=%e" % (hmm.cal_emt_prob(obs_seq, hs_idx_seq)))
         print(hiden_seq)
 
-        ln_len = 60
-        mytree, myleaf = create_tree(hmm, obs_seq, line_len=ln_len, max_size_level=1, searching_scal=0.15)
+        #ln_len = g_line_len
+        mytree, myleaf = create_tree(hmm, obs_seq, line_len=g_line_len, max_size_level=g_nodes_per_level, searching_scal=g_sch_scal)
         leaf, pianyi, prob = myleaf[0]
-        print("Decoded Probability=%e" % (prob))
-        stack = []
-        node = leaf
-        while node is not None:
-            stack.append((node.hiden_states, node.prob))
-            node = node.father
-        # 从堆栈中读取数据并输出
-        prob = 1.0
-        pianyi = 0
-        stack.pop()  # 删除根节点
-        new_hs = []
-        while stack:
-            hs, probs = stack.pop()
-            prob *= probs
-            for s in hs:
-                if s.startswith('I') or s.startswith('D') or s.startswith('M'):
-                    new_s = add_number_to_string(s, pianyi)
-                    new_hs.append(new_s)
-                else:
-                    pass
-            pianyi += ln_len
+        new_hs = get_hidden_states(leaf, g_line_len)
         new_hs.append(hmm.states[-1])
+        print("Decoded Probability=%e" % (prob))
         print(new_hs)
 
     return
@@ -232,7 +270,12 @@ def demonstrate_model():
 
 def decode_sequence():
     #读取模型
-    h5file = input("请输入DNA序列模型文件名（如model.hdf5）:")
+    global g_h5file, g_line_len, g_nodes_per_level, g_sch_scal
+    h5file = input(f"请输入DNA序列模型文件名（如model.hdf5,当前值为{g_h5file}）:")
+    if h5file.strip():
+        g_h5file = h5file
+    else:
+        h5file = g_h5file
     try:
         with h5py.File(h5file, 'r') as f:
             dnalen = f['dnalen'][()]
@@ -251,6 +294,9 @@ def decode_sequence():
     seqfile = input("请输入包含一组DNA序列的fasta文件名:")
     seqs = []
     annos = []
+
+    enquire_param()
+
     for fa in SeqIO.parse(seqfile, "fasta"):
         b_seq = list(fa.seq)
         if hmm.seq_is_dna(b_seq):
@@ -262,33 +308,15 @@ def decode_sequence():
         anno = annos[i]
         obs_seq = seqs[i]
         print(anno)
-        print(obs_seq)
+        #print(obs_seq)
+        print_list_characters(obs_seq, 60)
 
-        ln_len = 60
-        mytree, myleaf = create_tree(hmm, obs_seq, line_len=ln_len, max_size_level=1, searching_scal=0.15)
+        #ln_len = g_line_len
+        mytree, myleaf = create_tree(hmm, obs_seq, line_len=g_line_len, max_size_level=g_nodes_per_level, searching_scal=g_sch_scal)
         leaf, pianyi, prob = myleaf[0]
-        print("Decoded Probability=%e" % (prob))
-        stack = []
-        node = leaf
-        while node is not None:
-            stack.append((node.hiden_states, node.prob))
-            node = node.father
-        # 从堆栈中读取数据并输出
-        prob = 1.0
-        pianyi = 0
-        stack.pop()  # 删除根节点
-        new_hs = []
-        while stack:
-            hs, probs = stack.pop()
-            prob *= probs
-            for s in hs:
-                if s.startswith('I') or s.startswith('D') or s.startswith('M'):
-                    new_s = add_number_to_string(s, pianyi)
-                    new_hs.append(new_s)
-                else:
-                    pass
-            pianyi += ln_len
+        new_hs = get_hidden_states(leaf, g_line_len)
         new_hs.append(hmm.states[-1])
+        print("Decoded Probability=%e" % (prob))
         print(new_hs)
 
 def print_menu():
