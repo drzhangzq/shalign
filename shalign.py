@@ -339,7 +339,7 @@ def generate_model():
     dnalen=input(prompt_len)
     dnalen=int(dnalen)
     seqfile=input(prompt_seqfile)
-    h5file = input("请输入DNA序列模型文件名（如model.hdf5）:")
+    h5file = input(prompt_h5file)
     hmm = HMM(dnalen)
     hmm.emission_prob_update(seqfile)
     hmm.save_h5(h5file)
