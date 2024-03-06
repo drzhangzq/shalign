@@ -7,6 +7,7 @@ import re
 from HMM import HMM
 
 #全局变量定义
+g_lang="en" #language 'en':英文,'cn'：中文
 g_h5file=''
 g_line_len=60
 g_nodes_per_level=1
@@ -168,6 +169,18 @@ def add_number_to_string(input_string, increment):
     else:
         return input_string
 
+def get_number_in_string(input_string):
+    pattern = r'([A-Za-z]+)(\d+)'
+    match = re.match(pattern, input_string)
+    number=-1
+
+    if match:
+        prefix = match.group(1)
+        number = int(match.group(2))
+        return number
+    else:
+        return number
+
 def print_list_characters(input_list, line_len):
     input_string = ''.join(map(str, input_list))
     lines = [input_string[i:i+line_len] for i in range(0, len(input_string), line_len)]
@@ -175,16 +188,19 @@ def print_list_characters(input_list, line_len):
         print(line)
 
 def enquire_param():
-    global g_line_len, g_nodes_per_level, g_sch_scal
-    line_len = input(f"请输入DNA序列片段化的长度（默认值为60,当前值为{g_line_len}）:")
+    global g_line_len, g_nodes_per_level, g_sch_scal, g_lang
+    prompt_len = f"Please enter the length for fragmenting DNA sequences (default is 60, current value is {g_line_len}): " if g_lang == "en" else f"请输入DNA序列片段化的长度（默认值为60,当前值为{g_line_len}）:"
+    prompt_nodes = f"Please enter the maximum number of nodes to retain per level in the search tree (default is 1, current value is {g_nodes_per_level}):" if g_lang == "en" else f"请输入搜索树每层保留最大节点数（默认值为1,当前值为{g_nodes_per_level}）:"
+    prompt_scal = f"Please enter the search variable range (0.01~0.50, default is 0.1, current value is {g_sch_scal}):" if g_lang == "en" else f"请输入搜索可变范围（0.01~0.50,默认值为0.1,当前值为{g_sch_scal}）:"
+    line_len = input(prompt_len)
     if line_len.strip():
         g_line_len = int(line_len)
 
-    nodes = input(f"请输入搜索树每层保留最大节点数（默认值为1,当前值为{g_nodes_per_level}）:")
+    nodes = input(prompt_nodes)
     if nodes.strip():
         g_nodes_per_level = int(nodes)
 
-    scale = input(f"请输入搜索可变范围（0.01~0.50,默认值为0.1,当前值为{g_sch_scal}）:")
+    scale = input(prompt_scal)
     if scale.strip():
         g_sch_scal = float(scale)
 
@@ -211,11 +227,118 @@ def get_hidden_states(node,ln_len):
         pianyi += ln_len
     return new_hs
 
+def standoutput_aliangment(HMM_obj:HMM,sequence,hidden_states):
+    #生成参考序列 sequence_ref
+    sequence_ref=[]
+    for i in range(HMM_obj.dnalen):
+        obv_id=np.argmax(HMM_obj.emission_probs[i])
+        obv_char=HMM_obj.observations[obv_id]
+        sequence_ref.append(obv_char)
+    sequence_ref.append(HMM_obj.observations[-1])
+    lines_ref= [sequence_ref[i:i+60] for i in range(0, len(sequence_ref), 60)]
+
+    index=0
+    operations=[]
+    current_ops=hidden_states[index]
+    current_ops_pos=get_number_in_string(current_ops)
+    pos = 0
+    while pos < HMM_obj.dnalen:
+        if pos < current_ops_pos:
+            operations.append('R')
+        else:
+            if current_ops.startswith('I'):
+                operations.append('I')
+                index+=1
+                current_ops = hidden_states[index]
+                current_ops_pos = get_number_in_string(current_ops)
+                pos -= 1
+            elif current_ops.startswith('D'):
+                operations.append('D')
+                index+=1
+                current_ops = hidden_states[index]
+                current_ops_pos = get_number_in_string(current_ops)
+            elif current_ops.startswith('M'):
+                operations.append('M')
+                index+=1
+                current_ops = hidden_states[index]
+                current_ops_pos = get_number_in_string(current_ops)
+        pos +=1
+    operations.append('E')
+
+    sequence_copy = sequence.copy()
+    for i, op_char in enumerate(operations):
+        if op_char == 'D':
+            sequence_copy.insert(i, '-')
+
+    rulers = "0    5    " * 6
+    row = 0
+    lines = f"{row:>12}"
+    head_line = lines + rulers
+    print(head_line)
+    print("ref         "+"".join(lines_ref[row]))
+
+    line1 = []  # 存储操作后的字符
+    new_line = []  # 存储'I'操作生成的新行
+    new_line_pos=0
+    i=0
+    prev_operation = None  # 用于追踪上一个操作
+
+    for seq_char, op_char in zip(sequence_copy, operations):
+        if i//60 > row:
+            row = i //60
+            lines = f"{row*6:>12}"
+            head_line = lines + rulers
+            print(head_line)
+            print("ref         " + "".join(lines_ref[row]))
+        if op_char == 'R':
+            line1.append(seq_char)
+            i+=1
+        elif op_char == 'D':
+            line1.append(seq_char)
+            i+=1
+        elif op_char == 'M':
+            line1.append(seq_char.lower())
+            i+=1
+        elif op_char == 'I':
+            if prev_operation != 'I':
+                if new_line:
+                    print(' '*(12+new_line_pos)+"".join(new_line))
+                    new_line = []
+                    new_line_pos=i%60
+                    new_line.append(seq_char)
+                else:
+                    new_line_pos=i%60  # 记录起始位置
+                    new_line.append(seq_char)
+            else:
+                new_line.append(seq_char)
+
+        # 更新上一个操作
+        prev_operation = op_char
+
+        # 检查line1的长度是否达到60
+        if len(line1) == 60:
+            if new_line:
+                print(' '*(12+new_line_pos)+"".join(new_line))
+                new_line = []
+            print(' '*12+"".join(line1))
+            line1 = []
+
+    # 打印剩余的字符
+    if new_line:
+        print(' '*(12+new_line_pos)+"".join(new_line))
+    if line1:
+        line1.append(HMM_obj.observations[-1])
+        print(' '*12+"".join(line1))
+    return
 
 def generate_model():
-    dnalen=input("请输入DNA序列的长度，不含结束符（如 ACGe 长度为3）：")
+    global g_lang
+    prompt_len = "Enter the length of the DNA sequence, excluding the terminator (e.g., for ACGe, the length is 3):" if g_lang == "en" else "请输入DNA序列的长度，不含结束符（如 ACGe 长度为3）："
+    prompt_h5file = "Enter the filename for the DNA sequence model (e.g., model.hdf5):" if g_lang == "en" else "请输入DNA序列模型文件名（如model.hdf5）:"
+    prompt_seqfile = "Enter the filename containing a group of DNA sequences in fasta format:" if g_lang == "en" else "请输入包含一组DNA序列的fasta文件名:"
+    dnalen=input(prompt_len)
     dnalen=int(dnalen)
-    seqfile=input("请输入包含一组DNA序列的fasta文件名:")
+    seqfile=input(prompt_seqfile)
     h5file = input("请输入DNA序列模型文件名（如model.hdf5）:")
     hmm = HMM(dnalen)
     hmm.emission_prob_update(seqfile)
@@ -226,8 +349,11 @@ def generate_model():
 
 def demonstrate_model():
     # 实现模型演示的功能
-    global g_h5file, g_line_len, g_nodes_per_level, g_sch_scal
-    h5file=input(f"请输入DNA序列模型文件名（如model.hdf5,当前值为{g_h5file}）:")
+    global g_h5file, g_line_len, g_nodes_per_level, g_sch_scal, g_lang
+    #准备提示文本
+    h5file_prompt = f"Enter the filename for the DNA sequence model (e.g., model.hdf5, current value is {g_h5file}):" if g_lang == "en" else f"请输入DNA序列模型文件名（如model.hdf5，当前值为{g_h5file}）:"
+    #h5file=input(f"请输入DNA序列模型文件名（如model.hdf5,当前值为{g_h5file}）:")
+    h5file=input(h5file_prompt)
     if h5file.strip():
         g_h5file=h5file
     else:
@@ -239,12 +365,15 @@ def demonstrate_model():
             hmm.emission_probs = f['emission_matrix'][()]
             hmm.all_observations = f['all_observations'][()]
     except FileNotFoundError:
-        print(f"文件 {h5file} 未找到，请检查文件路径是否正确。")
+        prompt_notfound = f"File {h5file} not found. Please check the file path." if g_lang == "en" else f"文件 {h5file} 未找到，请检查文件路径是否正确。"
+        print(prompt_notfound)
         return
     except Exception as e:
-        print(f"打开文件时发生错误：{e}")
+        prompt_fileerror = f"Error occurred while opening the file: {e}" if g_lang == "en" else f"打开文件时发生错误：{e}"
+        print(prompt_fileerror)
         return
-    demontimes=input("请输入演示次数（如2）:")
+    prompt_times = "Enter the number of demonstrations (e.g., 2): " if g_lang == "en" else "请输入演示次数（如2）:"
+    demontimes=input(prompt_times)
 
     enquire_param()
 
@@ -262,6 +391,7 @@ def demonstrate_model():
         leaf, pianyi, prob = myleaf[0]
         new_hs = get_hidden_states(leaf, g_line_len)
         new_hs.append(hmm.states[-1])
+        standoutput_aliangment(hmm,obs_seq,new_hs)
         print("Decoded Probability=%e" % (prob))
         print(new_hs)
 
@@ -270,8 +400,10 @@ def demonstrate_model():
 
 def decode_sequence():
     #读取模型
-    global g_h5file, g_line_len, g_nodes_per_level, g_sch_scal
-    h5file = input(f"请输入DNA序列模型文件名（如model.hdf5,当前值为{g_h5file}）:")
+    global g_h5file, g_line_len, g_nodes_per_level, g_sch_scal, g_lang
+    prompt_h5file = f"Enter the filename for the DNA sequence model (e.g., model.hdf5, current value is {g_h5file}):" if g_lang == "en" else f"请输入DNA序列模型文件名（如model.hdf5，当前值为{g_h5file}）:"
+    prompt_seqfile = "Enter the filename containing a group of DNA sequences in fasta format:" if g_lang == "en" else "请输入包含一组DNA序列的fasta文件名:"
+    h5file = input(prompt_h5file)
     if h5file.strip():
         g_h5file = h5file
     else:
@@ -285,13 +417,15 @@ def decode_sequence():
             hmm.transition_probs = f['transition_matrix'][()]
             hmm.all_observations = f['all_observations'][()]
     except FileNotFoundError:
-        print(f"文件 {h5file} 未找到，请检查文件路径是否正确。")
+        prompt_notfound = f"File {h5file} not found. Please check the file path." if g_lang == "en" else f"文件 {h5file} 未找到，请检查文件路径是否正确。"
+        print(prompt_notfound)
         return
     except Exception as e:
-        print(f"打开文件时发生错误：{e}")
+        prompt_fileerror = f"Error occurred while opening the file: {e}" if g_lang == "en" else f"打开文件时发生错误：{e}"
+        print(prompt_fileerror)
         return
 
-    seqfile = input("请输入包含一组DNA序列的fasta文件名:")
+    seqfile = input(prompt_seqfile)
     seqs = []
     annos = []
 
@@ -316,21 +450,31 @@ def decode_sequence():
         leaf, pianyi, prob = myleaf[0]
         new_hs = get_hidden_states(leaf, g_line_len)
         new_hs.append(hmm.states[-1])
+        standoutput_aliangment(hmm, obs_seq, new_hs)
         print("Decoded Probability=%e" % (prob))
         print(new_hs)
 
 def print_menu():
-    print("======= 程序菜单 =======")
-    print("1）模型生成：从fasta文件中统计DNA序列每个位置上碱基出现的概率，保存为hdf5格式。")
-    print("2）解码演示：根据模型生成DNA观测序列，并解析观测序列对应的隐藏状态。")
-    print("3）序列解码：从fasta文件中读取DNA观测序例，解析对应的隐藏状态。")
-    print("4）退出")
+    global g_lang
+    menu_title="======= Program Menu =======" if g_lang=="en" else "======= 程序菜单 ======="
+    menu1 = "1) Generate Model: Calculate the probability of each base appearing at each position in DNA sequences from a fasta file and save as hdf5." if g_lang == "en" else "1）模型生成：从fasta文件中统计DNA序列每个位置上碱基出现的概率，保存为hdf5格式。"
+    menu2 = "2) Demonstrate Model: Generate DNA observation sequences based on the model and decode the corresponding hidden states." if g_lang == "en" else "2）解码演示：根据模型生成DNA观测序列，并解析观测序列对应的隐藏状态。"
+    menu3 = "3) Decode Sequence: Read DNA observation sequences from a fasta file and decode the corresponding hidden states." if g_lang == "en" else "3）序列解码：从fasta文件中读取DNA观测序例，解析对应的隐藏状态。"
+    menu4 = "4) Exit" if g_lang == "en" else "4）退出"
+    print(menu_title)
+    print(menu1)
+    print(menu2)
+    print(menu3)
+    print(menu4)
 
 def main():
+    global g_lang
+    prompt_choice = "Enter your choice (1-4):" if g_lang == "en" else "请输入您的选择（1-4）:"
+    prompt_exit = "Program exit. Thank you for using!" if g_lang == "en" else "程序退出，感谢使用！"
+    prompt_invalid = "Invalid choice. Please enter again." if g_lang == "en" else "无效的选择，请重新输入。"
     while True:
         print_menu()
-        choice = input("请输入您的选择（1-4）: ")
-
+        choice = input(prompt_choice)
         if choice == '1':
             generate_model()
         elif choice == '2':
@@ -338,10 +482,10 @@ def main():
         elif choice == '3':
             decode_sequence()
         elif choice == '4':
-            print("程序退出，感谢使用！")
+            print(prompt_exit)
             break
         else:
-            print("无效的选择，请重新输入。")
+            print(prompt_invalid)
 
 if __name__ == "__main__":
     main()
