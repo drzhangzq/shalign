@@ -1,17 +1,38 @@
+"""
+Shaohua alignment for DNA sequence.
+Version=1.1
+2024-04-28
+"""
 from Bio import SeqIO
 import numpy as np
 import h5py
 from math import inf
 from queue import Queue
 import re
+#import HMM version 1.1
 from HMM import HMM
 
 #全局变量定义
 g_lang="en" #language 'en':英文,'cn'：中文
 g_h5file=''
-g_line_len=60
+g_line_len=20
 g_nodes_per_level=1
 g_sch_scal=0.1
+
+class NewHMM(HMM):
+    def __init__(self, dnalen):
+        super().__init__(dnalen)
+
+    def add_all_emmit_prob(self, prob_eps):
+        # 为所与的M状态的发射射概率增加一个eps
+        for state in range (self.dnalen):
+            total=0.0
+            for index in range(4):
+                self.emission_probs[state][index] += prob_eps
+                if self.emission_probs[state][index] < 0:
+                    self.emission_probs[state][index] = 0
+                total += self.emission_probs[state][index]
+            self.emission_probs[state] /= total
 
 class Node:
     def __init__(self, value, prob=None):
@@ -31,10 +52,11 @@ def create_tree(hmm_obj:HMM, list_obv, line_len=60, max_size_level=1, searching_
     :param searching_scal: 每次搜索时，马尔科夫模型分解后的片段长度的可变范围，当默认值为60时，可变长度范围为正负6。
     :return: 正常结束返回搜索树和叶子节点两个参数
     """
+
     root = Node(0, 1.0)  # 创建根结点
     queue = Queue()
     temp_queue = []
-    queue.put((root, 0, 1.0))  # 0 表示所有父节点值之和，值的含义是引脚位置的偏移量。
+    queue.put((root, 0, 1.0))  # 0 表示所有父节点值之和，值的含义是引脚位置的偏移量, 1.0 表示出现概率位100%。
     obv_len = len(list_obv)-1
     dst = obv_len - hmm_obj.dnalen
     m = hmm_obj.dnalen//line_len
@@ -48,6 +70,7 @@ def create_tree(hmm_obj:HMM, list_obv, line_len=60, max_size_level=1, searching_
         seg_start = lv_m * line_len
         seg_end = seg_start + line_len - 1 if lv_m != m - 1 else hmm_obj.dnalen - 1  # 把最后一行剩余的碱基序列加到最后一行进行处理
         hmm_seg = create_hmm_seg(hmm_obj, seg_start, seg_end)
+        debug = True
         for _ in range(level_size):
             node, parent_sum, parent_prob = queue.get()
             if node.value != inf:
@@ -65,26 +88,15 @@ def create_tree(hmm_obj:HMM, list_obv, line_len=60, max_size_level=1, searching_
                     temp_index2 = i - pian_min
                     if (seg_end + pianyi + seg_insert + 1) > obv_len:
                         break
+                    # 判断树状结构某层中的一个节点temp_lv[temp_index1][temp_index2]是否在之前的计算过程中计算过了。None表示没有被计算过
                     if temp_lv[temp_index1][temp_index2] is None:
                         seg = list_obv[seg_start + pianyi:seg_end + pianyi + seg_insert + 1]
+                        hs=[]
                         if (seg_end + pianyi + seg_insert) < obv_len:
                             seg.append(hmm_obj.observations[-1])
-                        hs = []
-                        k_max = []
-                        if seg_insert < 0:
-                            prob_max = 0.0
-                            for j in range(1, -seg_insert + 1):
-                                k = hmm_seg.viterbi(seg, blockd=j)
-                                prob = hmm_seg.cal_emt_prob(seg, k)
-                                if prob > prob_max:
-                                    prob_max = prob
-                                    k_max = k
-                                    break
 
-                        else:
-                            k_max = hmm_seg.viterbi(seg, blockd=1)
-                            prob_max = hmm_seg.cal_emt_prob(seg, k_max)
-
+                        k_max = hmm_seg.viterbi(seg, blockd=1)
+                        prob_max = hmm_seg.cal_emt_prob(seg, k_max)
 
                         if prob_max == 0:
                             child_value = inf
@@ -92,7 +104,8 @@ def create_tree(hmm_obj:HMM, list_obv, line_len=60, max_size_level=1, searching_
 
                         else:
                             child_value = seg_insert
-                            #生成隐藏状态序列
+                            #生成隐藏状态序列hs
+
                             oi = 0
                             for si in k_max:
                                 state = hmm_seg.states[si]
@@ -109,6 +122,68 @@ def create_tree(hmm_obj:HMM, list_obv, line_len=60, max_size_level=1, searching_
                                     hs.append(state)
                                 else:
                                     hs.append(state)
+
+                        # 在保存隐藏状态之前，需要检查隐藏状态是否同时出现了D和I，如果是，需要检查能否把D和I简化
+                        # 初始化一个字典，用于保存隐藏状态
+                        result_dict = {'M': [], 'D': [], 'I': [], 'E': []}
+                        # 遍历列表中的每个字符串
+                        for string in hs:
+                            # 检查字符串的第一个字符是否为 M、D 或 I
+                            if string[0] in ['M', 'D', 'I', 'E']:
+                                # 将字符串的数字部分转换为整数
+                                number = int(string[1:])
+                                # 将整数添加到对应的键值列表中
+                                result_dict[string[0]].append(number)
+                        need_reduce = (len(result_dict['D']) > 0 and len(result_dict['I']) > 0)
+                        if need_reduce:
+                            # 第1步：生成参考序列 sequence_ref
+                            sequence_ref = []
+                            for i in range(hmm_seg.dnalen):
+                                obv_id = np.argmax(hmm_seg.emission_probs[i])
+                                obv_char = hmm_seg.observations[obv_id]
+                                sequence_ref.append(obv_char)
+                            sequence_ref.append(hmm_seg.observations[-1])
+
+                            #第2步：对齐sequence_seg与sequence_ref
+                            ocp_char = hmm_seg.observations[-2]
+                            sequence_ocp = seg.copy()
+                            if len(sequence_ocp) > len(sequence_ref):
+                                #如果观测序列长于参考序列，先找出观测序列中插入的元素，通过对调对齐序列的参考序列与观测序列的角色
+                                sequence_ref_copy = sequence_ref.copy()
+                                sequence_aln_first=[]
+                                sequence_aln_second=[]
+                                sequence_aln=[]
+                                sequence_aln_first = align_sequences(sequence_ref=sequence_ref, sequence_ocp=sequence_ocp,ocp_char=ocp_char)
+                                sequence_aln_second = align_sequences(sequence_ref=sequence_ocp, sequence_ocp=sequence_ref_copy, ocp_char=ocp_char)
+                                sequence_aln = align_sequences(sequence_ref=sequence_aln_second, sequence_ocp=sequence_ocp, ocp_char=ocp_char)
+                            else:
+                                sequence_aln = align_sequences(sequence_ref,sequence_ocp,ocp_char)
+                            if len(sequence_aln) > 0:
+                                #重新进行iterbi解码，但是不需要insert 'd'
+                                k_max = hmm_seg.viterbi(sequence_aln, blockd=1, with_insertion_d=False)
+                                prob_max = hmm_seg.cal_emt_prob(seg, k_max)
+                                #debug=True
+                                if prob_max > 0:
+                                    #重新生存hs隐藏状态序列
+                                    hs=[]
+                                    # 生成隐藏状态序列
+                                    oi = 0
+                                    for si in k_max:
+                                        state = hmm_seg.states[si]
+                                        obv = seg[oi]
+                                        if state.startswith('M'):
+                                            obv_idx = hmm_seg.observations.index(obv)
+                                            oi += 1
+                                            if hmm_seg.emission_probs[si][obv_idx] == max(hmm_seg.emission_probs[si]):
+                                                pass
+                                            else:
+                                                hs.append(state)
+                                        elif state.startswith('I'):
+                                            oi += 1
+                                            hs.append(state)
+                                        else:
+                                            hs.append(state)
+
 
                         child = Node(child_value, prob_max)
                         child.hiden_states = hs
@@ -140,6 +215,47 @@ def create_tree(hmm_obj:HMM, list_obv, line_len=60, max_size_level=1, searching_
         print(f'\r[{bar}] {progress_percent}% ', end='', flush=True)
     print("\n")
     return root, temp_queue
+
+def align_sequences(sequence_ref, sequence_ocp, ocp_char):
+    # Create a matrix to store the alignment scores
+    dp = [[0 for _ in range(len(sequence_ocp) + 1)] for _ in range(len(sequence_ref) + 1)]
+
+    # Initialize the first row and column
+    for i in range(len(sequence_ref) + 1):
+        dp[i][0] = i
+    for j in range(len(sequence_ocp) + 1):
+        dp[0][j] = j
+
+    # Fill the matrix
+    for i in range(1, len(sequence_ref) + 1):
+        for j in range(1, len(sequence_ocp) + 1):
+            if sequence_ref[i - 1] == sequence_ocp[j - 1] or (sequence_ref[i - 1] == ocp_char) or (
+                    sequence_ocp[j - 1] == ocp_char):
+                dp[i][j] = dp[i - 1][j - 1]
+            else:
+                dp[i][j] = min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]) + 1
+
+    # Backtrack to find the aligned sequence
+    aligned_ocp = []
+    i, j = len(sequence_ref), len(sequence_ocp)
+    while i != 0 and j != 0:
+        if sequence_ref[i - 1] == sequence_ocp[j - 1] or (sequence_ref[i - 1] == ocp_char) or (
+                sequence_ocp[j - 1] == ocp_char):
+            aligned_ocp.append(sequence_ocp[j - 1])
+            i -= 1
+            j -= 1
+        elif dp[i - 1][j] < dp[i][j - 1]:
+            aligned_ocp.append(ocp_char)
+            i -= 1
+        else:
+            aligned_ocp.append(sequence_ocp[j - 1])
+            j -= 1
+
+    # If there's a remaining gap at the beginning, fill it with ocp_char
+    if i != 0:
+        aligned_ocp += [ocp_char] * i
+
+    return aligned_ocp[::-1]
 
 def create_hmm_seg(hmm:HMM, seg_start, seg_end):
     hmm_seg = HMM(dnalen=seg_end - seg_start + 1)
@@ -189,7 +305,7 @@ def print_list_characters(input_list, line_len):
 
 def enquire_param():
     global g_line_len, g_nodes_per_level, g_sch_scal, g_lang
-    prompt_len = f"Please enter the length for fragmenting DNA sequences (default is 60, current value is {g_line_len}): " if g_lang == "en" else f"请输入DNA序列片段化的长度（默认值为60,当前值为{g_line_len}）:"
+    prompt_len = f"Please enter the length for fragmenting DNA sequences (default is 20, current value is {g_line_len}): " if g_lang == "en" else f"请输入DNA序列片段化的长度（默认值为20,当前值为{g_line_len}）:"
     prompt_nodes = f"Please enter the maximum number of nodes to retain per level in the search tree (default is 1, current value is {g_nodes_per_level}):" if g_lang == "en" else f"请输入搜索树每层保留最大节点数（默认值为1,当前值为{g_nodes_per_level}）:"
     prompt_scal = f"Please enter the search variable range (0.01~0.50, default is 0.1, current value is {g_sch_scal}):" if g_lang == "en" else f"请输入搜索可变范围（0.01~0.50,默认值为0.1,当前值为{g_sch_scal}）:"
     line_len = input(prompt_len)
@@ -227,6 +343,132 @@ def get_hidden_states(node,ln_len):
         pianyi += ln_len
     return new_hs
 
+def check_hidden_states(new_hs,HMM_obj:HMM, obs_seq):
+    def process_elements(new_hs):
+        q_d = []  # 创建一个空队列
+        results = []  # 存储结果的列表
+        last_d_num = None  # 记录最后一个D的数字
+        last_i_num = None
+
+        for element in new_hs:
+            if element[0] == 'D':
+                current_d_num = int(element[1:])  # 提取当前D后面的数字
+                if not q_d or (last_d_num is not None and current_d_num == last_d_num + 1):
+                    # 如果队列为空，或者当前D的数字是最后一个D数字加1（连续）
+                    q_d.append(element)
+                    last_d_num = current_d_num
+                elif last_i_num == None:
+                    # 如果不连续，且没有I，重置队列，并开始新的队列
+                    q_d = [element]
+                    last_d_num = current_d_num
+                elif last_i_num is not None:
+                    results.append(list(q_d))
+                    q_d = []
+                    last_d_num = None
+                    last_i_num = None
+            elif element[0] == 'M':
+                if last_i_num == None:
+                    # 如果遇到M，清空队列
+                    q_d = []
+                    last_d_num = None
+                    last_i_num = None
+                else:
+                    results.append(list(q_d))
+                    q_d = []
+                    last_d_num = None
+                    last_i_num = None
+            elif element[0] == 'I':
+                if q_d and q_d[-1][0] == 'D' or last_i_num == int(element[1:]):  # 确保队列中最后一个元素是D
+                    q_d.append(element)
+                    last_i_num = int(element[1:])
+                elif q_d and last_d_num is not None and last_i_num is not None:
+                    results.append(list(q_d))
+                    q_d = []
+                    last_d_num = None
+                    last_i_num = None
+            else:
+                # 当取到的元素不是队列中的I时，检查队列是否有效并记录结果
+                if q_d and q_d[-1][0] == 'I':
+                    results.append(list(q_d))  # 添加到结果中
+                q_d = []  # 清空队列
+                last_d_num = None
+                last_i_num = None
+
+        # 检查最后一次迭代后队列中是否有未处理的有效数据
+        if q_d and q_d[-1][0] == 'I':
+            results.append(list(q_d))
+
+        return results
+
+    def extract_details(results):
+        first_d_num = last_d_num = first_i_num = i_count = None
+        first_i = None
+
+        # 遍历结果列表寻找D和I
+        for item in results:
+            if item.startswith('D'):
+                num = int(item[1:])
+                if first_d_num is None:
+                    first_d_num = num  # 第一个D后的数字
+                last_d_num = num  # 最后一个D后的数字
+
+            elif item.startswith('I'):
+                num = int(item[1:])
+                if first_i_num is None:
+                    first_i_num = num  # 第一个I后的数字
+                    first_i = item  # 第一个I
+
+        # 计算特定I出现的次数
+        if first_i:
+            i_count = results.count(first_i)
+
+        return first_d_num, last_d_num, first_i_num, i_count
+
+    # 生成参考序列 sequence_ref
+    sequence_ref = []
+    for i in range(HMM_obj.dnalen):
+        obv_id = np.argmax(HMM_obj.emission_probs[i])
+        obv_char = HMM_obj.observations[obv_id]
+        sequence_ref.append(obv_char)
+
+    result = process_elements(new_hs)
+    insertions = [int(item[1:]) for item in new_hs if item.startswith('I')]
+    delets = [int(item[1:]) for item in new_hs if item.startswith('D')]
+    remove_list=[]
+    for i in range(len(result)):
+        details = extract_details(result[i])
+        d_start=details[0]
+        d_end=details[1]+1
+        pianyi=0
+        for items in insertions:
+            if items < d_end:
+                pianyi += 1
+            else:
+                break
+        for items in delets:
+            if items < d_end:
+                pianyi -= 1
+            else:
+                break
+        i_start=d_end+pianyi
+        i_end=details[2]+details[3] + pianyi
+
+        seq0 = sequence_ref[d_start:d_end]
+        seq1 = obs_seq[i_start:i_end]
+        seq0_str = ''.join(seq0)
+        seq1_str = ''.join(seq1)
+        subsets_at = seq0_str.find(seq1_str)
+        if subsets_at != -1:
+            for j in range(subsets_at,subsets_at+details[3],1):
+                remove_list.append(result[i][j])
+            for j in range(-1,-(details[3]+1),-1):
+                remove_list.append(result[i][j])
+    #从new_hs中删除remove_list中的元素。
+    if remove_list:
+        for elem in remove_list:
+            if elem in new_hs:
+                new_hs.remove(elem)
+
 def standoutput_aliangment(HMM_obj:HMM,sequence,hidden_states):
     #生成参考序列 sequence_ref
     sequence_ref=[]
@@ -234,7 +476,8 @@ def standoutput_aliangment(HMM_obj:HMM,sequence,hidden_states):
         obv_id=np.argmax(HMM_obj.emission_probs[i])
         obv_char=HMM_obj.observations[obv_id]
         sequence_ref.append(obv_char)
-    sequence_ref.append(HMM_obj.observations[-1])
+    #不输出结束符‘e’
+    #sequence_ref.append(HMM_obj.observations[-1])
     lines_ref= [sequence_ref[i:i+60] for i in range(0, len(sequence_ref), 60)]
 
     index=0
@@ -242,7 +485,7 @@ def standoutput_aliangment(HMM_obj:HMM,sequence,hidden_states):
     current_ops=hidden_states[index]
     current_ops_pos=get_number_in_string(current_ops)
     pos = 0
-    while pos < HMM_obj.dnalen:
+    while pos < HMM_obj.dnalen + 1:
         if pos < current_ops_pos:
             operations.append('R')
         else:
@@ -326,13 +569,14 @@ def standoutput_aliangment(HMM_obj:HMM,sequence,hidden_states):
     # 打印剩余的字符
     if new_line:
         print(' '*(12+new_line_pos)+"".join(new_line))
+
     if line1:
-        line1.append(HMM_obj.observations[-1])
+        #line1.append(HMM_obj.observations[-1])
         print(' '*12+"".join(line1))
     return
 
 def generate_model():
-    global g_lang
+    global g_lang, g_h5file
     prompt_len = "Enter the length of the DNA sequence, excluding the terminator (e.g., for ACGe, the length is 3):" if g_lang == "en" else "请输入DNA序列的长度，不含结束符（如 ACGe 长度为3）："
     prompt_h5file = "Enter the filename for the DNA sequence model (e.g., model.hdf5):" if g_lang == "en" else "请输入DNA序列模型文件名（如model.hdf5）:"
     prompt_seqfile = "Enter the filename containing a group of DNA sequences in fasta format:" if g_lang == "en" else "请输入包含一组DNA序列的fasta文件名:"
@@ -340,10 +584,12 @@ def generate_model():
     dnalen=int(dnalen)
     seqfile=input(prompt_seqfile)
     h5file = input(prompt_h5file)
-    hmm = HMM(dnalen)
+    hmm = NewHMM(dnalen)
     hmm.emission_prob_update(seqfile)
+    hmm.add_all_emmit_prob(0.001)
     hmm.save_h5(h5file)
     hmm.print_model()
+    g_h5file = h5file
 
     return
 
@@ -372,17 +618,28 @@ def demonstrate_model():
         prompt_fileerror = f"Error occurred while opening the file: {e}" if g_lang == "en" else f"打开文件时发生错误：{e}"
         print(prompt_fileerror)
         return
+
     prompt_times = "Enter the number of demonstrations (e.g., 2): " if g_lang == "en" else "请输入演示次数（如2）:"
     demontimes=input(prompt_times)
+    if not demontimes.isdigit():
+        number=2
+    else:
+        number = int(demontimes)
+        if number <= 0:
+            number=2
 
     enquire_param()
 
-
-    for i in range(int(demontimes)):
-        obs_seq, hiden_seq, hs_idx_seq = hmm.generate_train_seq()
+    for i in range(number):
+        #排除掉没有任何变异的生成序列
+        hiden_seq=['E']
+        while (len(hiden_seq)<=5):
+            obs_seq, hiden_seq, hs_idx_seq = hmm.generate_train_seq()
 
         #print(obs_seq)
+        endchar = obs_seq.pop()
         print_list_characters(obs_seq, 60)
+        obs_seq.append(endchar)
         print("Observation Probability=%e" % (hmm.cal_emt_prob(obs_seq, hs_idx_seq)))
         print(hiden_seq)
 
@@ -391,6 +648,7 @@ def demonstrate_model():
         leaf, pianyi, prob = myleaf[0]
         new_hs = get_hidden_states(leaf, g_line_len)
         new_hs.append(hmm.states[-1])
+        check_hidden_states(new_hs, hmm, obs_seq)
         standoutput_aliangment(hmm,obs_seq,new_hs)
         print("Decoded Probability=%e" % (prob))
         print(new_hs)
@@ -441,15 +699,18 @@ def decode_sequence():
     for i in range(len(seqs)):
         anno = annos[i]
         obs_seq = seqs[i]
-        print(anno)
+        print('>'+anno)
         #print(obs_seq)
+        #不输出结束符
+        endchar=obs_seq.pop()
         print_list_characters(obs_seq, 60)
-
+        obs_seq.append(endchar)
         #ln_len = g_line_len
         mytree, myleaf = create_tree(hmm, obs_seq, line_len=g_line_len, max_size_level=g_nodes_per_level, searching_scal=g_sch_scal)
         leaf, pianyi, prob = myleaf[0]
         new_hs = get_hidden_states(leaf, g_line_len)
         new_hs.append(hmm.states[-1])
+        check_hidden_states(new_hs,hmm,obs_seq)
         standoutput_aliangment(hmm, obs_seq, new_hs)
         print("Decoded Probability=%e" % (prob))
         print(new_hs)

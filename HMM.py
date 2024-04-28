@@ -1,3 +1,8 @@
+"""
+HMM Class
+Version = 1.1
+2024-04-25
+"""
 from Bio import SeqIO
 import numpy as np
 import h5py
@@ -10,7 +15,7 @@ class HMM:
     IITRANSPROB = 0.2
     DDTRANSPROB = 0.2
     def __init__(self, dnalen):
-        self.dnalen = int(dnalen)
+        self.dnalen = int(dnalen) #DNA序列（不含结束符）的长度
         self.states = []
         for i in range(self.dnalen):
             sstat = 'M' + str(i)
@@ -155,7 +160,7 @@ class HMM:
     def cal_emt_prob(self, obs, hdn):
         """
         计算发射概率
-        :param obs: 观测序列，list元素为char
+        :param obs: 观测序列，list元素为char, 不含删除对应的观测符
         :param hdn: 观测序列对应的隐藏状态序列，list元素为int
         :return: 返回观测序列的概率float。
         """
@@ -321,7 +326,7 @@ class HMM:
             f.create_dataset('transition_matrix',data=self.transition_probs)
             f.create_dataset('all_observations',data=self.all_observations)
 
-    def viterbi(self, obs, blockd=3):
+    def viterbi(self, obs, blockd=1, with_insertion_d=True):
         """
         使用Viterbi算法来解码隐马尔科夫模型。
         shalign使用改进的viterbi算法，当temp全为零时，就把观测序列加一个d,使用树型结构对插入位置进行搜索，直至解码成功或添加的d个数超过了阈值。
@@ -333,10 +338,10 @@ class HMM:
             next_states = []
             for i in range(len(current_states)):
                 if current_states[i] != 0:
-                    if i < self.dnalen - 1:
+                    if i < self.dnalen-1:
                         next_states.append(i + 1)
                         next_states.append(i + self.dnalen + 1)
-                        next_states.append(i + self.dnalen + 1 + self.dnalen)
+                        next_states.append(i + 1 + self.dnalen + 1 + self.dnalen)
                     elif i == self.dnalen - 1:
                         next_states.append(i + self.dnalen + 1)
                         next_states.append(self.dnalen * 3 + 1)
@@ -348,7 +353,7 @@ class HMM:
                         next_states.append(i)
                     elif i < self.dnalen * 3:
                         next_states.append(i + 1)
-                        next_states.append(i - self.dnalen * 2)
+                        next_states.append(i - (self.dnalen * 2 + 1) + 1)
                     elif i == self.dnalen * 3:
                         next_states.append(self.dnalen * 3 + 1)
             res = set(next_states)
@@ -451,7 +456,7 @@ class HMM:
                 # 记录路径。
                 backpointers[t, s] = np.argmax(temp)
             #如果返回的temp全零，则在位置t之前插入1个'd',直至viterbi的每一行都不全为零。
-            while (np.max(viterbi[t]) == 0 and t < int(self.dnalen*2)): #增大self.dnalen后的系数可以提高解码成功率，当系数等于2.0时意味着把所有的观测序列都删除，一定可以通过插入生成任何需要的观测序列。
+            while ((np.max(viterbi[t]) == 0 and t < int(self.dnalen*2)) and with_insertion_d): #增大self.dnalen后的系数可以提高解码成功率，当系数等于2.0时意味着把所有的观测序列都删除，一定可以通过插入生成任何需要的观测序列。
                 #增加一行viterbi
                 T = T + blockd
                 viterbi = np.vstack([viterbi, np.zeros((blockd,N))])
@@ -467,5 +472,4 @@ class HMM:
         hidden_states[-1] = np.argmax(viterbi[-1])
         for t in range(T - 2, -1, -1):
             hidden_states[t] = backpointers[t + 1, hidden_states[t + 1]]
-
         return hidden_states
